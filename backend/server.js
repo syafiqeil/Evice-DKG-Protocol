@@ -1,8 +1,10 @@
 // backend/server.js 
 
+require('dotenv').config();
 const express = require("express");
 const cors = require("cors");
 const { PublicKey } = require("@solana/web3.js");
+const DKG = require('dkg.js');
 
 const { getMint } = require("@solana/spl-token"); 
 const {
@@ -24,6 +26,29 @@ app.use(express.json()); // Middleware untuk mem-parsing body JSON
 const CONFIG = {
   splToken: process.env.SPL_TOKEN_MINT,
   recipientWallet: process.env.MY_WALLET_ADDRESS,
+};
+
+// --- KONFIGURASI DKG ---
+const dkg = new DKG({
+    endpoint: process.env.OT_NODE_ENDPOINT || 'http://localhost',
+    port: 8900,
+    useSSL: false,
+    blockchain: {
+        name: 'otp:2043', // NeuroWeb Testnet
+        publicKey: process.env.EVM_PUBLIC_KEY,
+        privateKey: process.env.EVM_PRIVATE_KEY, 
+    },
+    maxNumberOfRetries: 3,
+    frequency: 2,
+    contentType: 'all'
+});
+
+// --- DATABASE UAL (PENGGANTI DATA STATIS) ---
+// UAL ini didapat setelah Anda menjalankan script 'publish-assets.js'
+// Ganti string di bawah dengan UAL asli hasil output script publish nanti
+const KNOWLEDGE_ASSETS = {
+  tokenomics: process.env.TOKENOMICS_UAL || "did:dkg:otp:2043/0xPLACEHOLDER1",
+  roadmap: process.env.ROADMAP_UAL || "did:dkg:otp:2043/0xPLACEHOLDER2",
 };
 
 // --- DATABASE DOKUMEN & ALAT AGEN ---
@@ -80,21 +105,48 @@ app.get(
   }
 );
 
+// 2. The Main Handler (x402 + DKG)
 app.get(
   "/api/get-context",
-  budgetPaywall({ amount: 0.005, ...CONFIG }), // 1. Cek Anggaran
-  x402Paywall({ amount: 0.005, ...CONFIG }), // 2. Fallback ke 402
-  (req, res) => {
+  budgetPaywall({ amount: 0.005, ...CONFIG }), // Cek Budget
+  x402Paywall({ amount: 0.005, ...CONFIG }),   // Cek Payment
+  async (req, res) => {
     const docId = req.query.docId;
-    const content = documentDatabase[docId];
+    const assetUAL = KNOWLEDGE_ASSETS[docId];
 
-    if (content) {
-      res.json({
-        context: content,
-        paymentMethod: req.x402_payment_method || "unknown",
+    if (!assetUAL) {
+      return res.status(404).json({ error: "Asset UAL not defined for this topic." });
+    }
+
+    console.log(`🔍 Verifying & Fetching from DKG: ${assetUAL}`);
+
+    try {
+      // Backend mengambil data langsung dari Decentralized Knowledge Graph
+      const result = await dkg.asset.get(assetUAL);
+      
+      if (result && result.assertion && result.assertion.public) {
+        const verifiedData = result.assertion.public;
+        
+        res.json({
+          context: verifiedData.text, // Isi teks dari DKG
+          metadata: {
+              source: "OriginTrail DKG (NeuroWeb)",
+              ual: assetUAL,
+              publisher: verifiedData.author.name,
+              verifiability: "✅ Cryptographically Verified"
+          },
+          paymentMethod: req.x402_payment_method || "unknown",
+        });
+      } else {
+        throw new Error("Asset found but data is empty/private.");
+      }
+
+    } catch (error) {
+      console.error("DKG Fetch Error:", error);
+      res.status(500).json({ 
+          error: "Failed to fetch verified data from DKG.",
+          details: error.message
       });
-    } else {
-      res.status(404).json({ error: "Dokumen tidak ditemukan" });
     }
   }
 );
@@ -175,4 +227,5 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'Internal server error' });
 });
 
+app.listen(3001, () => console.log("Evice DKG Protocol running on port 3001"));
 module.exports = app;
