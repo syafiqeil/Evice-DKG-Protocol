@@ -4,12 +4,12 @@ const DKG = require('dkg.js');
 
 // Konfigurasi DKG Client (Gunakan Testnet Node)
 const dkgOptions = {
-    endpoint: process.env.OT_NODE_ENDPOINT || 'http://localhost:8900', 
-    port: 8900,
-    useSSL: false,
+    endpoint: process.env.OT_NODE_ENDPOINT || 'http://localhost',
+    port: process.env.OT_NODE_PORT || 8900,
+    useSSL: true,
     loglevel: 'info',
     blockchain: {
-        name: 'otp:2043', // NeuroWeb Testnet
+        name: 'otp:20430', // NeuroWeb Testnet
         publicKey: process.env.EVM_PUBLIC_KEY,
         privateKey: process.env.EVM_PRIVATE_KEY, 
     },
@@ -19,6 +19,9 @@ const dkgOptions = {
 };
 
 const dkg = new DKG(dkgOptions);
+
+// Fungsi Helper untuk Jeda (Sleep)
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function publishData(type, contentData) {
     console.log(`🚀 Publishing ${type} to DKG...`);
@@ -47,11 +50,21 @@ async function publishData(type, contentData) {
             }
         );
         
-        console.log(`✅ ${type} Published!`);
-        console.log(`🔗 UAL: ${result.UAL}`);
-        return result.UAL;
+        // DEBUG LOG: Lihat apa isi result sebenarnya
+        console.log(`🔍 Debug Result for ${type}:`, JSON.stringify(result, null, 2));
+
+        if (result.UAL) {
+            console.log(`✅ ${type} Published!`);
+            console.log(`🔗 UAL: ${result.UAL}`);
+            return result.UAL;
+        } else {
+            console.error(`⚠️ ${type} Published but UAL is missing!`);
+            return null;
+        }
+        
     } catch (error) {
         console.error(`❌ Gagal publish ${type}:`, error);
+        return null;
     }
 }
 
@@ -60,7 +73,14 @@ async function publishData(type, contentData) {
     const tokenomicsText = "Tokenomics: 50% Community, 30% Team, 20% Foundation. Vesting 4 years.";
     const roadmapText = "Roadmap: Q1 DKG Integration, Q2 Mainnet Launch, Q3 AI Agents Swarm.";
 
+    // Publish Tokenomics
     const ual1 = await publishData("Tokenomics", tokenomicsText);
+    
+    // JEDA 10 DETIK untuk mencegah nonce error / node overload
+    console.log("⏳ Menunggu 10 detik sebelum publish berikutnya...");
+    await sleep(10000);
+
+    // Publish Roadmap
     const ual2 = await publishData("Roadmap", roadmapText);
 
     console.log("\n🎉 SIMPAN KODE UAL INI UNTUK SERVER.JS:");

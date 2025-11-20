@@ -1,20 +1,18 @@
-// backend/x402-paywall.js 
+// backend/x402-paywall.js (VERSI NEUROWEB / EVM)
 
-const { Connection, clusterApiUrl, PublicKey } = require("@solana/web3.js");
-const { getMint } = require("@solana/spl-token");
+const { ethers } = require("ethers");
 const { randomUUID } = require("crypto");
 let kvClient = null;
 
-const SOLANA_NETWORK = "devnet";
-const connection = new Connection(clusterApiUrl(SOLANA_NETWORK), "confirmed");
+// --- KONFIGURASI NEUROWEB (Testnet / Mainnet) ---
+// NeuroWeb Testnet RPC
+const RPC_URL = process.env.NEUROWEB_RPC || "https://lofar-testnet.origin-trail.network"; 
+const provider = new ethers.JsonRpcProvider(RPC_URL);
 
-// In-memory fallback untuk KV (seperti di file asli Anda)
+// Fallback in-memory KV (Sama seperti sebelumnya)
 global.__usedRefs = global.__usedRefs || new Set();
 global.__userBudgets = global.__userBudgets || new Map();
 
-/**
- * Mendapatkan KV client, dengan fallback ke in-memory store
- */
 async function getKvClient() {
   if (kvClient) return kvClient;
   if (process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN) {
@@ -23,14 +21,13 @@ async function getKvClient() {
       kvClient = kv;
       return kvClient;
     } catch (e) {
-      console.warn("Gagal menginisialisasi Vercel KV:", e.message);
+      console.warn("Gagal init Vercel KV, fallback ke memory");
       return null;
     }
   }
   return null;
 }
 
-// Fungsi Helper untuk KV
 const kv = {
   get: async (key) => {
     const client = await getKvClient();
@@ -40,194 +37,125 @@ const kv = {
   set: async (key, value, options) => {
     const client = await getKvClient();
     if (client) return client.set(key, value, options);
-    if (key.startsWith("budget_")) {
-      global.__userBudgets.set(key, value);
-    } else {
-      global.__usedRefs.add(key);
-    }
+    if (key.startsWith("budget_")) global.__userBudgets.set(key, value);
+    else global.__usedRefs.add(key);
   },
 };
 
 /**
- * Logika verifikasi transaksi yang diekstrak.
- * Memverifikasi jumlah, memo, dan penerima.
- * @returns {object|null} - Mengembalikan data transaksi jika valid, atau null.
+ * VERIFIKASI TRANSAKSI EVM (NeuroWeb)
+ * Memastikan tx hash valid, jumlah benar, dan data (memo) cocok.
  */
-async function verifyTransaction(
-  signature,
-  reference,
-  requiredAmount,
-  splTokenMint,
-  recipientWallet
-) {
+async function verifyTransaction(txHash, reference, requiredAmount, recipientAddress) {
   try {
-    const tx = await connection.getParsedTransaction(signature, "finalized");
-    if (!tx || (tx.meta && tx.meta.err)) {
-      throw new Error("Transaksi gagal atau tidak ditemukan.");
+    // 1. Ambil transaksi dari blockchain
+    const tx = await provider.getTransaction(txHash);
+    if (!tx) throw new Error("Transaksi tidak ditemukan di NeuroWeb.");
+
+    // 2. Tunggu setidaknya 1 konfirmasi (opsional, tapi aman)
+    // await tx.wait(1); 
+
+    // 3. Verifikasi Penerima
+    if (tx.to.toLowerCase() !== recipientAddress.toLowerCase()) {
+      throw new Error(`Penerima salah. Harusnya: ${recipientAddress}, Diterima: ${tx.to}`);
     }
 
-    // 1. Verifikasi Memo (Reference)
-    const memoInstruction = tx.transaction.message.instructions?.find(
-      (ix) =>
-        ix.programId.toBase58() === "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"
-    );
-    const memo = memoInstruction ? memoInstruction.parsed : null;
-    const isReferenceValid = memo === reference;
-    if (!isReferenceValid) {
-      throw new Error(`Referensi memo tidak valid. Diharapkan: ${reference}, Diterima: ${memo}`);
-    }
-
-    // 2. Verifikasi Jumlah
-    const MINT_STR = splTokenMint.toBase58();
-    const RECIPIENT_OWNER_STR = recipientWallet.toBase58();
-
-    const mintInfo = await getMint(connection, splTokenMint);
-    const requiredAmountSmallestUnit = BigInt(
-      Math.floor(requiredAmount * Math.pow(10, mintInfo.decimals))
-    );
-
-    const preBalance = tx.meta.preTokenBalances?.find(
-      (b) => b.owner === RECIPIENT_OWNER_STR && b.mint === MINT_STR
-    );
-    const postBalance = tx.meta.postTokenBalances?.find(
-      (b) => b.owner === RECIPIENT_OWNER_STR && b.mint === MINT_STR
-    );
-
-    const preAmount = BigInt(preBalance?.uiTokenAmount?.amount || "0");
-    const postAmount = BigInt(postBalance?.uiTokenAmount?.amount || "0");
-    const amountReceived = postAmount - preAmount;
-
-    console.log(`Verifikasi Saldo: Awal: ${preAmount}, Akhir: ${postAmount}, Diterima: ${amountReceived}, Dibutuhkan: ${requiredAmountSmallestUnit}`);
+    // 4. Verifikasi Referensi (Memo di EVM dikirim via 'data' field dalam Hex)
+    // Kita asumsikan reference dikirim sebagai HEX data
+    const inputData = tx.data;
+    const referenceHex = ethers.hexlify(ethers.toUtf8Bytes(reference));
     
-    const isAmountValid = amountReceived === requiredAmountSmallestUnit;
-    if (!isAmountValid) {
-      // Izinkan jika jumlah lebih besar (misal, setoran)
-      if (amountReceived > requiredAmountSmallestUnit) {
-         console.log("Jumlah diterima lebih besar, mengizinkan untuk setoran budget.");
-      } else {
-         throw new Error(`Jumlah token salah. Diterima: ${amountReceived}, Dibutuhkan: ${requiredAmountSmallestUnit}`);
-      }
+    // Cek apakah data transaksi mengandung referensi kita
+    if (!inputData.includes(referenceHex.replace('0x', ''))) {
+       throw new Error("Referensi/Memo tidak cocok dalam data transaksi.");
     }
+
+    // 5. Verifikasi Jumlah (Native Token OTP / NEURO)
+    const valueInEther = ethers.formatEther(tx.value);
     
-    // Semua valid!
+    // Izinkan toleransi kecil atau cek exact match
+    if (parseFloat(valueInEther) < parseFloat(requiredAmount)) {
+      throw new Error(`Jumlah kurang. Diterima: ${valueInEther}, Diminta: ${requiredAmount}`);
+    }
+
     return {
       success: true,
-      amountReceived: Number(amountReceived) / Math.pow(10, mintInfo.decimals),
-      amountReceivedSmallestUnit: amountReceived, // Kembalikan unit terkecil
+      amountReceived: parseFloat(valueInEther),
+      sender: tx.from
     };
+
   } catch (error) {
-    console.warn(`Verifikasi gagal: ${error.message}`);
+    console.error("Verifikasi Gagal:", error.message);
     return { success: false, error: error.message };
   }
 }
 
 /**
- * IMPROVISASI #1: Middleware Anggaran (Budget Paywall)
+ * Middleware Budget Paywall (Logic Sama, Adaptasi EVM)
  */
-const budgetPaywall = ({ amount, splToken }) => async (req, res, next) => {
-  const payerPubkey = req.headers["x402-payer-pubkey"];
-  if (!payerPubkey) {
-    return next(); // Tidak ada header, lanjutkan ke paywall 402 normal
-  }
+const budgetPaywall = ({ amount }) => async (req, res, next) => {
+  const payerAddress = req.headers["x402-payer-address"]; // Ganti istilah Pubkey jadi Address
+  if (!payerAddress) return next();
 
   try {
-    const budgetKey = `budget_${payerPubkey}`;
-    const currentBudget = (await kv.get(budgetKey)) || 0; // Anggaran disimpan dalam unit terkecil
+    const budgetKey = `budget_${payerAddress.toLowerCase()}`;
+    const currentBudget = parseFloat((await kv.get(budgetKey)) || "0");
 
-    const MINT_STR = splToken;
-    const MINT_PUBKEY = new PublicKey(MINT_STR);
-    const mintInfo = await getMint(connection, MINT_PUBKEY);
-    const requiredAmount = BigInt(Math.floor(amount * Math.pow(10, mintInfo.decimals)));
-
-    if (currentBudget >= requiredAmount) {
-      // Anggaran CUKUP!
-      const newBudget = BigInt(currentBudget) - requiredAmount;
-      console.log(`BudgetPaywall: Menggunakan anggaran untuk ${payerPubkey}. Sisa: ${newBudget}`);
-      // Kurangi anggaran dan berikan akses
-      await kv.set(budgetKey, newBudget.toString()); // Simpan sebagai string
-      req.x402_payment_method = "budget"; // Tandai bahwa ini dibayar via anggaran
-      return next(); // Lolos!
-    } else {
-      // Anggaran tidak cukup
-      console.log(`BudgetPaywall: Anggaran tidak cukup untuk ${payerPubkey}. Diminta: ${requiredAmount}, Tersedia: ${currentBudget}`);
-      return next(); // Lanjutkan ke paywall 402 normal
+    if (currentBudget >= amount) {
+      const newBudget = currentBudget - amount;
+      console.log(`✅ Budget Used: ${payerAddress}. Sisa: ${newBudget}`);
+      await kv.set(budgetKey, newBudget.toString());
+      req.x402_payment_method = "budget";
+      return next();
     }
+    console.log(`⚠️ Budget Insufficient: ${payerAddress}`);
+    return next();
   } catch (error) {
-    console.error("Error di BudgetPaywall:", error);
-    return next(); // Terjadi error, biarkan 402 paywall menanganinya
+    console.error("Budget Error:", error);
+    return next();
   }
 };
 
 /**
- * Paywall 402 Asli (Sekarang sebagai Fallback)
+ * x402 Paywall (Fallback ke On-Chain Payment)
  */
-function x402Paywall({ amount, splToken, recipientWallet }) {
+function x402Paywall({ amount, recipientWallet }) {
   return async (req, res, next) => {
-    try {
-      if (req.x402_payment_method === "budget") {
+    if (req.x402_payment_method === "budget") return next();
+
+    const authHeader = req.headers["authorization"];
+    // Format header: "x402 <tx_hash>"
+    const txHash = authHeader?.startsWith("x402 ") ? authHeader.split(" ")[1] : null;
+    const reference = req.query.reference;
+
+    if (txHash && reference) {
+      const refKey = `ref_${reference}`;
+      if (await kv.get(refKey)) {
+        return res.status(401).json({ error: "Payment replay detected" });
+      }
+
+      const result = await verifyTransaction(txHash, reference, amount, recipientWallet);
+
+      if (result.success) {
+        await kv.set(refKey, "used", { ex: 3600 });
+        req.x402_payment_method = "onetime_neuroweb";
         return next();
+      } else {
+        return res.status(402).json({ error: `Verifikasi gagal: ${result.error}` });
       }
-
-      const MINT_PUBKEY = new PublicKey(splToken.trim());
-      const RECIPIENT_WALLET_PUBKEY = new PublicKey(recipientWallet.trim());
-
-      const authHeader = req.headers["authorization"];
-      const signature = authHeader?.startsWith("x402 ")
-        ? authHeader.split(" ")[1]
-        : null;
-      const reference = req.query.reference ? req.query.reference.toString() : null;
-
-      if (signature && reference) {
-        const refKey = `ref_${reference}`;
-        if (await kv.get(refKey)) {
-          return res.status(401).json({ error: "Pembayaran sudah diklaim (replay attack)" });
-        }
-
-        console.log(`Verifikasi pembayaran: sig=${signature}, ref=${reference}`);
-        
-        const verification = await verifyTransaction(
-          signature,
-          reference,
-          amount,
-          MINT_PUBKEY,
-          RECIPIENT_WALLET_PUBKEY
-        );
-
-        // Validasi jumlah yang diterima HARUS SAMA PERSIS untuk 402 onetime
-        const mintInfo = await getMint(connection, MINT_PUBKEY);
-        const requiredAmountSmallestUnit = BigInt(Math.floor(amount * Math.pow(10, mintInfo.decimals)));
-
-        if (verification.success && verification.amountReceivedSmallestUnit === requiredAmountSmallestUnit) {
-          await kv.set(refKey, true, { ex: 300 }); 
-          console.log("Pembayaran valid. Akses diberikan.");
-          req.x402_payment_method = "onetime"; 
-          return next();
-        } else {
-          let errorMsg = verification.error;
-          if (verification.amountReceivedSmallestUnit !== requiredAmountSmallestUnit) {
-              errorMsg = `Jumlah token salah. Diterima: ${verification.amountReceivedSmallestUnit}, Dibutuhkan: ${requiredAmountSmallestUnit}`;
-          }
-          return res.status(401).json({ error: `Pembayaran tidak valid: ${errorMsg}` });
-        }
-      }
-
-      console.log("Tidak ada bukti bayar. Mengirim tantangan 402.");
-      const newReference = randomUUID();
-      const invoice = {
-        protocol: "x402",
-        recipientWallet: RECIPIENT_WALLET_PUBKEY.toBase58(),
-        amount: amount,
-        token: MINT_PUBKEY.toBase58(),
-        reference: newReference,
-      };
-
-      return res.status(402).json(invoice);
-    } catch (error) {
-      console.error("Error di x402Paywall:", error);
-      return res.status(500).json({ error: `Internal server error: ${error.message}` });
     }
+
+    // Generate Invoice 402 baru
+    const newRef = randomUUID();
+    res.status(402).json({
+      protocol: "x402-neuroweb", // Ubah nama protokol biar keren
+      recipient: recipientWallet,
+      amount: amount,
+      currency: "NEURO", // Atau OTP
+      reference: newRef,
+      instruction: "Send NEURO to recipient with reference as HEX data."
+    });
   };
 }
 
-// Ekspor 'connection' agar server.js bisa menggunakannya
-module.exports = { x402Paywall, budgetPaywall, verifyTransaction, kv, connection };
+module.exports = { x402Paywall, budgetPaywall, verifyTransaction, kv, provider };
