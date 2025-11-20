@@ -28,7 +28,7 @@ const CONFIG = {
 const dkg = new DKG({
     endpoint: process.env.OT_NODE_ENDPOINT || 'http://localhost',
     port: 8900,
-    useSSL: true,
+    useSSL: false,
     blockchain: {
         name: 'otp:20430', // NeuroWeb Testnet
         publicKey: process.env.EVM_PUBLIC_KEY,

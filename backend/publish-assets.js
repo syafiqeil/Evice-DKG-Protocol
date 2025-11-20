@@ -2,14 +2,14 @@
 require('dotenv').config();
 const DKG = require('dkg.js');
 
-// Konfigurasi DKG Client (Gunakan Testnet Node)
+// Konfigurasi DKG Client
 const dkgOptions = {
-    endpoint: process.env.OT_NODE_ENDPOINT || 'http://localhost',
+    endpoint: process.env.OT_NODE_ENDPOINT || 'http://localhost', 
     port: process.env.OT_NODE_PORT || 8900,
-    useSSL: true,
+    useSSL: false, 
     loglevel: 'info',
     blockchain: {
-        name: 'otp:20430', // NeuroWeb Testnet
+        name: 'otp:20430', // NeuroWeb Testnet ID yang BENAR
         publicKey: process.env.EVM_PUBLIC_KEY,
         privateKey: process.env.EVM_PRIVATE_KEY, 
     },
@@ -42,28 +42,26 @@ async function publishData(type, contentData) {
         // Create Asset di DKG
         const result = await dkg.asset.create(
             {
-                public: asset // Data publik
+                public: asset 
             },
             {
                 keywords: ['Evice', 'x402', type, 'Hackathon'],
-                epochsNum: 5 // Simpan selama 5 epoch
+                epochsNum: 5 
             }
         );
         
-        // DEBUG LOG: Lihat apa isi result sebenarnya
-        console.log(`🔍 Debug Result for ${type}:`, JSON.stringify(result, null, 2));
-
+        // Cek apakah UAL ada
         if (result.UAL) {
             console.log(`✅ ${type} Published!`);
             console.log(`🔗 UAL: ${result.UAL}`);
             return result.UAL;
         } else {
-            console.error(`⚠️ ${type} Published but UAL is missing!`);
-            return null;
+            console.error(`⚠️ ${type} Published but UAL is undefined (Node might be busy/syncing).`);
+            return "UNDEFINED_TRY_AGAIN";
         }
         
     } catch (error) {
-        console.error(`❌ Gagal publish ${type}:`, error);
+        console.error(`❌ Gagal publish ${type}:`, error.message);
         return null;
     }
 }
@@ -73,12 +71,15 @@ async function publishData(type, contentData) {
     const tokenomicsText = "Tokenomics: 50% Community, 30% Team, 20% Foundation. Vesting 4 years.";
     const roadmapText = "Roadmap: Q1 DKG Integration, Q2 Mainnet Launch, Q3 AI Agents Swarm.";
 
+    console.log("⏳ Warming up connection (5 seconds)...");
+    await sleep(5000);
+
     // Publish Tokenomics
     const ual1 = await publishData("Tokenomics", tokenomicsText);
     
-    // JEDA 10 DETIK untuk mencegah nonce error / node overload
-    console.log("⏳ Menunggu 10 detik sebelum publish berikutnya...");
-    await sleep(10000);
+    // Jeda lagi agar tidak nonce collision
+    console.log("⏳ Cooldown (5 seconds)...");
+    await sleep(5000);
 
     // Publish Roadmap
     const ual2 = await publishData("Roadmap", roadmapText);
