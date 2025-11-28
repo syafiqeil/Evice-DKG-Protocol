@@ -1,7 +1,6 @@
 // frontend/src/PremiumContent.jsx 
 
 import React, { useState } from "react";
-import "@solana/wallet-adapter-react-ui/styles.css"; 
 import { useX402 } from "./useX402";
 
 function PremiumContent() {

@@ -15,7 +15,7 @@ const {
 const app = express();
 
 app.use(cors({
-  origin: '*', // Izinkan semua origin
+  origin: '*',
   exposedHeaders: ['Content-Type', 'Authorization', 'x402-Payer-Address'], 
 }));
 app.use(express.json());
@@ -24,13 +24,13 @@ const CONFIG = {
   recipientWallet: process.env.MY_EVM_WALLET_ADDRESS, 
 };
 
-// --- KONFIGURASI DKG (OriginTrail) ---
+// --- KONFIGURASI DKG ---
 const dkg = new DKG({
     endpoint: process.env.OT_NODE_ENDPOINT || 'http://localhost',
     port: 8900,
     useSSL: false,
     blockchain: {
-        name: 'otp:20430', // NeuroWeb Testnet
+        name: 'otp:20430',
         publicKey: process.env.EVM_PUBLIC_KEY,
         privateKey: process.env.EVM_PRIVATE_KEY, 
     },
@@ -40,51 +40,35 @@ const dkg = new DKG({
 });
 
 // --- DATABASE UAL ---
-// Pastikan UAL ini diisi setelah menjalankan publish-assets.js
 const KNOWLEDGE_ASSETS = {
-  tokenomics: process.env.TOKENOMICS_UAL || "did:dkg:otp:2043/0xPLACEHOLDER1",
-  roadmap: process.env.ROADMAP_UAL || "did:dkg:otp:2043/0xPLACEHOLDER2",
+  tokenomics: process.env.TOKENOMICS_UAL || "mock:did:dkg:otp:20430/tokenomics",
+  roadmap: process.env.ROADMAP_UAL || "mock:did:dkg:otp:20430/roadmap",
 };
 
-// --- MCP (Model Context Protocol) DEFINITIONS ---
+// --- MOCK DATA STORE (Untuk Fallback jika Node Mati) ---
+const MOCK_CONTENT = {
+  "mock:did:dkg:otp:20430/tokenomics": "Tokenomics: 50% Community, 30% Team, 20% Foundation. Vesting 4 years. (Verified via Mock DKG)",
+  "mock:did:dkg:otp:20430/roadmap": "Roadmap: Q1 DKG Integration, Q2 Mainnet Launch, Q3 AI Agents Swarm. (Verified via Mock DKG)"
+};
+
 const mcpTools = [
   {
     name: "get_tokenomics",
-    description: "Retrieve verified tokenomics data from OriginTrail DKG",
-    parameters: { type: "object", properties: {} },
+    description: "Retrieve verified tokenomics data",
     price_neuro: 0.005,
     endpoint: "/api/get-context?docId=tokenomics"
   },
   {
     name: "get_roadmap",
-    description: "Retrieve verified project roadmap from OriginTrail DKG",
-    parameters: { type: "object", properties: {} },
+    description: "Retrieve verified project roadmap",
     price_neuro: 0.005,
     endpoint: "/api/get-context?docId=roadmap"
-  },
-  {
-    name: "get_premium_sample",
-    description: "Retrieve a sample premium data payload",
-    parameters: { type: "object", properties: {} },
-    price_neuro: 0.01,
-    endpoint: "/api/premium-data"
   }
 ];
 
-// 1. Endpoint MCP Discovery (Standar Baru)
-app.get("/api/mcp/tools", (req, res) => {
-  res.json({
-    jsonrpc: "2.0",
-    result: {
-      tools: mcpTools
-    }
-  });
-});
-
-// 2. Endpoint Legacy untuk Frontend React (Mapping dari MCP)
 app.get("/api/agent-tools", (req, res) => {
   const uiTools = mcpTools.map(t => ({
-    id: t.name.replace("get_", "").replace("_sample", ""), // formatting ID biar rapi di UI
+    id: t.name.replace("get_", ""), 
     description: t.description,
     endpoint: t.endpoint,
     cost: t.price_neuro
@@ -92,13 +76,11 @@ app.get("/api/agent-tools", (req, res) => {
   res.json(uiTools);
 });
 
-// --- API PUBLIK ---
 app.get("/api/public", (req, res) => {
   res.json({ message: "Free data for you all!" });
 });
 
-// --- API PREMIUM (DILINDUNGI) ---
-
+// --- PREMIUM API (Protected by x402) ---
 app.get(
   "/api/premium-data",
   budgetPaywall({ amount: 0.01, ...CONFIG }), 
@@ -112,7 +94,7 @@ app.get(
   }
 );
 
-// Main Handler (x402 + DKG)
+// --- MAIN HANDLER (x402 + DKG + MOCK FALLBACK) ---
 app.get(
   "/api/get-context",
   budgetPaywall({ amount: 0.005, ...CONFIG }), 
@@ -125,68 +107,73 @@ app.get(
       return res.status(404).json({ error: "Asset UAL not defined for this topic." });
     }
 
-    console.log(`🔍 Verifying & Fetching from DKG: ${assetUAL}`);
+    console.log(`🔍 Request for: ${docId} (UAL: ${assetUAL})`);
 
+    // 1. Cek apakah ini Mock UAL?
+    if (assetUAL.startsWith("mock:")) {
+        console.log("⚠️ Serving MOCK data (DKG Node Bypass)");
+        return res.json({
+            context: MOCK_CONTENT[assetUAL] || "Mock data not found.",
+            metadata: {
+                source: "Evice Local Cache (Mock Mode)",
+                ual: assetUAL,
+                verifiability: "✅ Simulated Verification"
+            },
+            paymentMethod: req.x402_payment_method || "unknown",
+        });
+    }
+
+    // 2. Jika UAL asli, ambil dari DKG Node
     try {
+      console.log(`🔗 Connecting to DKG Node...`);
       const result = await dkg.asset.get(assetUAL);
       
       if (result && result.assertion && result.assertion.public) {
-        const verifiedData = result.assertion.public;
-        
         res.json({
-          context: verifiedData.text, 
+          context: result.assertion.public.text, 
           metadata: {
               source: "OriginTrail DKG (NeuroWeb)",
               ual: assetUAL,
-              publisher: verifiedData.author?.name || "Anonymous",
+              publisher: result.assertion.public.author?.name || "Anonymous",
               verifiability: "✅ Cryptographically Verified"
           },
           paymentMethod: req.x402_payment_method || "unknown",
         });
       } else {
-        throw new Error("Asset found but data is empty/private.");
+        throw new Error("Asset found but empty.");
       }
 
     } catch (error) {
-      console.error("DKG Fetch Error:", error);
+      console.error("DKG Fetch Error:", error.message);
       res.status(500).json({ 
-          error: "Failed to fetch verified data from DKG.",
+          error: "Failed to fetch from DKG Node. Ensure node is running.",
           details: error.message
       });
     }
   }
 );
 
-// Helper: Cek Budget (Digunakan Frontend untuk UI)
+// --- ENDPOINT DEPOSIT & BUDGET ---
 app.get("/api/get-current-budget", async (req, res) => {
-  const { payerAddress } = req.query; // Ubah parameter query jadi payerAddress
-  if (!payerAddress) {
-    return res.status(400).json({ error: "payerAddress is required" });
-  }
-  try {
-    const budgetKey = `budget_${payerAddress.toLowerCase()}`;
-    const currentBudget = (await kv.get(budgetKey)) || "0";
-    res.json({ currentBudget: currentBudget });
-  } catch (e) {
-    console.error("Error fetching budget:", e);
-    res.status(500).json({ error: "Failed to fetch current budget" });
-  }
+  const { payerAddress } = req.query;
+  if (!payerAddress) return res.status(400).json({ error: "payerAddress required" });
+  
+  const budgetKey = `budget_${payerAddress.toLowerCase()}`;
+  const currentBudget = (await kv.get(budgetKey)) || "0";
+  res.json({ currentBudget: currentBudget });
 });
 
-// --- ENDPOINT DEPOSIT (EVM) ---
 app.post("/api/confirm-budget-deposit", async (req, res) => {
   try {
     const { txHash, reference, payerAddress, amount } = req.body;
-
     if (!txHash || !reference || !payerAddress || !amount) {
-      return res.status(400).json({ error: "Data tidak lengkap (txHash, reference, payerAddress, amount)" });
+      return res.status(400).json({ error: "Incomplete data" });
     }
 
-    // Cek replay attack
     const refKey = `ref_${reference}`;
     if (await kv.get(refKey)) return res.status(401).json({ error: "Tx already used" });
 
-    // Verifikasi Transaksi di NeuroWeb
+    // Verifikasi ke Blockchain (Tetap dilakukan walau DKG di-mock)
     const verification = await verifyTransaction(
       txHash, 
       reference, 
@@ -195,7 +182,6 @@ app.post("/api/confirm-budget-deposit", async (req, res) => {
     );
 
     if (verification.success && verification.sender.toLowerCase() === payerAddress.toLowerCase()) {
-      // Update Budget
       const budgetKey = `budget_${payerAddress.toLowerCase()}`;
       const currentBudget = parseFloat((await kv.get(budgetKey)) || "0");
       const newBudget = currentBudget + verification.amountReceived;
@@ -203,10 +189,10 @@ app.post("/api/confirm-budget-deposit", async (req, res) => {
       await kv.set(budgetKey, newBudget.toString());
       await kv.set(refKey, "used", { ex: 3600 });
 
-      console.log(`💰 Deposit Success: ${amount} NEURO from ${payerAddress}`);
+      console.log(`💰 Deposit Success: ${amount} from ${payerAddress}`);
       res.json({ success: true, newBudget });
     } else {
-      res.status(400).json({ error: "Verifikasi deposit gagal", details: verification.error });
+      res.status(400).json({ error: "Deposit verification failed", details: verification.error });
     }
   } catch (e) {
     console.error("Deposit Error:", e);
@@ -214,10 +200,4 @@ app.post("/api/confirm-budget-deposit", async (req, res) => {
   }
 });
 
-app.use((err, req, res, next) => {
-  console.error(err);
-  res.status(500).json({ error: 'Internal server error' });
-});
-
-app.listen(3001, () => console.log("Evice DKG Protocol running on port 3001"));
-module.exports = app;
+app.listen(3001, () => console.log("Evice Protocol (Mock/Hybrid Mode) running on port 3001"));

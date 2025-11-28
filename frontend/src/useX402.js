@@ -1,10 +1,8 @@
 // frontend/src/useX402.js
-import { useContext } from "react";
-import { X402Context } from "./X402Provider"; // Impor dari file baru
 
-/**
- * Hook kustom untuk mengakses fungsi fetchWith402 dan depositBudget.
- */
+import { useContext } from "react";
+import { X402Context } from "./X402Provider.jsx"; 
+
 export const useX402 = () => {
   const context = useContext(X402Context);
   if (!context) {

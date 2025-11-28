@@ -1,7 +1,7 @@
 // frontend/src/AgentComponent.jsx (TAILWIND & ENGLISH)
 
 import React, { useState, useEffect, useRef } from "react";
-import { useX402 } from "./useX402"; 
+import { useX402 } from "./useX402.js"; // Pastikan ekstensi .js
 
 export function AgentComponent() {
   const [prompt, setPrompt] = useState("");

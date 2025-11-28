@@ -1,19 +1,23 @@
-/* frontend/src/index.css */
-
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-.wallet-adapter-button-trigger {
-  background-color: #512da8; 
-  color: white;
-  font-weight: 600;
-  border: none;
-  border-radius: 8px;
-  padding: 0 20px;
-  height: 48px;
-  line-height: 48px;
+body {
+  background-color: #ffffff;
+  font-family: 'Inter', sans-serif; 
 }
-.wallet-adapter-button-trigger:hover {
-  background-color: #4527a0;
+
+/* Custom Scrollbar untuk Chatbox */
+::-webkit-scrollbar {
+  width: 8px;
+}
+::-webkit-scrollbar-track {
+  background: #f1f1f1; 
+}
+::-webkit-scrollbar-thumb {
+  background: #c7c7c7; 
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #a0a0a0; 
 }
